@@ -57,37 +57,43 @@ void TuyaLight::setup() {
         return;
       }
 
+      float red, green, blue;
       switch (*this->color_type_) {
         case TuyaColorType::RGBHSV:
         case TuyaColorType::RGB: {
-          auto red = parse_hex<uint8_t>(datapoint.value_string.substr(0, 2));
-          auto green = parse_hex<uint8_t>(datapoint.value_string.substr(2, 2));
-          auto blue = parse_hex<uint8_t>(datapoint.value_string.substr(4, 2));
-          if (red.has_value() && green.has_value() && blue.has_value()) {
-            auto rgb_call = this->state_->make_call();
-            rgb_call.set_rgb(float(*red) / 255, float(*green) / 255, float(*blue) / 255);
-            rgb_call.perform();
-          }
+          auto rgb = parse_hex<uint32_t>(datapoint.value_string.substr(0, 6));
+          if (!rgb.has_value())
+            return;
+
+          red = (*rgb >> 16) / 255.0f;
+          green = ((*rgb >> 8) & 0xff) / 255.0f;
+          blue = (*rgb & 0xff) / 255.0f;
           break;
         }
         case TuyaColorType::HSV: {
           auto hue = parse_hex<uint16_t>(datapoint.value_string.substr(0, 4));
           auto saturation = parse_hex<uint16_t>(datapoint.value_string.substr(4, 4));
           auto value = parse_hex<uint16_t>(datapoint.value_string.substr(8, 4));
-          if (hue.has_value() && saturation.has_value() && value.has_value()) {
-            float red, green, blue;
-            hsv_to_rgb(*hue, float(*saturation) / 1000, float(*value) / 1000, red, green, blue);
-            auto rgb_call = this->state_->make_call();
-            rgb_call.set_rgb(red, green, blue);
-            rgb_call.perform();
-          }
+          if (!hue.has_value() || !saturation.has_value() || !value.has_value())
+            return;
+
+          hsv_to_rgb(*hue, float(*saturation) / 1000, float(*value) / 1000, red, green, blue);
           break;
         }
       }
+
+      float current_red, current_green, current_blue;
+      this->state_->current_values_as_rgb(&current_red, &current_green, &current_blue);
+      if (red == current_red && green == current_green && blue == current_blue)
+        return;
+      auto rgb_call = this->state_->make_call();
+      rgb_call.set_rgb(red, green, blue);
+      rgb_call.perform();
     });
   }
+
   if (min_value_datapoint_id_.has_value()) {
-    parent_->set_integer_datapoint_value(*this->min_value_datapoint_id_, this->min_value_);
+    this->parent_->set_integer_datapoint_value(*this->min_value_datapoint_id_, this->min_value_);
   }
 }
 
@@ -114,8 +120,9 @@ light::LightTraits TuyaLight::get_traits() {
         traits.set_supported_color_modes(
             {light::ColorMode::RGB_COLOR_TEMPERATURE, light::ColorMode::COLOR_TEMPERATURE});
       }
-    } else
+    } else {
       traits.set_supported_color_modes({light::ColorMode::COLOR_TEMPERATURE});
+    }
     traits.set_min_mireds(this->cold_white_temperature_);
     traits.set_max_mireds(this->warm_white_temperature_);
   } else if (this->color_id_.has_value()) {
@@ -125,8 +132,9 @@ light::LightTraits TuyaLight::get_traits() {
       } else {
         traits.set_supported_color_modes({light::ColorMode::RGB_WHITE});
       }
-    } else
+    } else {
       traits.set_supported_color_modes({light::ColorMode::RGB});
+    }
   } else if (this->dimmer_id_.has_value()) {
     traits.set_supported_color_modes({light::ColorMode::BRIGHTNESS});
   } else {
@@ -156,24 +164,24 @@ void TuyaLight::write_state(light::LightState *state) {
   }
 
   if (!state->current_values.is_on() && this->switch_id_.has_value()) {
-    parent_->set_boolean_datapoint_value(*this->switch_id_, false);
+    this->parent_->set_boolean_datapoint_value(*this->switch_id_, false);
     return;
   }
 
   if (brightness > 0.0f || !color_interlock_) {
     if (this->color_temperature_id_.has_value()) {
-      uint32_t color_temp_int = static_cast<uint32_t>(color_temperature * this->color_temperature_max_value_);
+      uint32_t color_temp_int = static_cast<uint32_t>(roundf(color_temperature * this->color_temperature_max_value_));
       if (this->color_temperature_invert_) {
         color_temp_int = this->color_temperature_max_value_ - color_temp_int;
       }
-      parent_->set_integer_datapoint_value(*this->color_temperature_id_, color_temp_int);
+      this->parent_->set_integer_datapoint_value(*this->color_temperature_id_, color_temp_int);
     }
 
     if (this->dimmer_id_.has_value()) {
       auto brightness_int = static_cast<uint32_t>(brightness * this->max_value_);
       brightness_int = std::max(brightness_int, this->min_value_);
 
-      parent_->set_integer_datapoint_value(*this->dimmer_id_, brightness_int);
+      this->parent_->set_integer_datapoint_value(*this->dimmer_id_, brightness_int);
     }
   }
 
@@ -210,7 +218,7 @@ void TuyaLight::write_state(light::LightState *state) {
   }
 
   if (this->switch_id_.has_value()) {
-    parent_->set_boolean_datapoint_value(*this->switch_id_, true);
+    this->parent_->set_boolean_datapoint_value(*this->switch_id_, true);
   }
 }
 
